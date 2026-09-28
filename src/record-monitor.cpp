@@ -69,10 +69,11 @@ void forward(void *param, calldata_t *cd, RecEventType type)
 	obs_data_t *settings = obs_output_get_settings(output);
 	const QString directory = settingString(settings, "directory");
 	const QString format = settingString(settings, "format");
+	const QString filePath = settingString(settings, "path");
 	obs_data_release(settings);
 
 	QMetaObject::invokeMethod(
-		monitor, [=]() { monitor->handleSignal(key, name, directory, format, type, now, code); },
+		monitor, [=]() { monitor->handleSignal(key, name, directory, format, filePath, type, now, code); },
 		Qt::QueuedConnection);
 }
 
@@ -256,7 +257,7 @@ void RecordMonitor::emitEvent(quint64 key, const QString &label, RecEventType ty
 }
 
 void RecordMonitor::handleSignal(quint64 key, const QString &outputName, const QString &directory,
-				 const QString &format, RecEventType type, const QDateTime &time, int code)
+				 const QString &format, const QString &filePath, RecEventType type, const QDateTime &time, int code)
 {
 	if (shutDown_)
 		return;
@@ -277,7 +278,15 @@ void RecordMonitor::handleSignal(quint64 key, const QString &outputName, const Q
 	if (!it->resolved)
 		return; // not a Source Record output (e.g. OBS's own recording)
 
-	emitEvent(key, it->label, type, time, code, false);
+	RecEventInfo info;
+	info.key = key;
+	info.source = it->label;
+	info.type = type;
+	info.time = time;
+	info.stopCode = code;
+	info.approximate = false;
+	info.filePath = filePath;
+	emit recordEvent(info);
 }
 
 void RecordMonitor::track(obs_output_t *output, quint64 key)
