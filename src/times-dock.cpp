@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QFont>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QLinearGradient>
 #include <QPainter>
@@ -23,12 +24,13 @@ public:
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	}
 
-	void setStatus(State state, const QString &timeText)
+	void setStatus(State state, const QString &timeText, const QString &sizeText)
 	{
-		if (state_ == state && timeText_ == timeText)
+		if (state_ == state && timeText_ == timeText && sizeText_ == sizeText)
 			return;
 		state_ = state;
 		timeText_ = timeText;
+		sizeText_ = sizeText;
 		update();
 	}
 
@@ -97,6 +99,14 @@ protected:
 		p.drawText(QRectF(outer.left(), outer.top() + 111, outer.width(), 52),
 			   Qt::AlignCenter, timeText_);
 
+		QFont sizeFont = font();
+		sizeFont.setBold(true);
+		sizeFont.setPointSizeF(std::max(9.0, font().pointSizeF() + 0.5));
+		p.setFont(sizeFont);
+		p.setPen(QColor("#a7a7a7"));
+		p.drawText(QRectF(outer.left(), outer.top() + 165, outer.width(), 24),
+			   Qt::AlignCenter, sizeText_);
+
 		QFont footer = font();
 		footer.setPointSizeF(std::max(8.0, font().pointSizeF() - 1.0));
 		p.setFont(footer);
@@ -134,6 +144,7 @@ private:
 
 	State state_ = State::Stopped;
 	QString timeText_ = QStringLiteral("00:00:00");
+	QString sizeText_ = QStringLiteral("FILE SIZE 0 B");
 };
 
 TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
@@ -206,7 +217,7 @@ void TimesDock::updatePanel()
 
 	const int idx = latestSessionIndex();
 	if (idx < 0 || idx >= sessions_.size()) {
-		panel_->setStatus(StatusPanel::State::Stopped, QStringLiteral("00:00:00"));
+		panel_->setStatus(StatusPanel::State::Stopped, QStringLiteral("00:00:00"), QStringLiteral("FILE SIZE 0 B"));
 		return;
 	}
 
@@ -219,7 +230,8 @@ void TimesDock::updatePanel()
 	else if (s.active)
 		state = StatusPanel::State::Recording;
 
-	panel_->setStatus(state, fmtDuration(recordedNow(s, nowMs)));
+	const qint64 fileSize = s.filePath.isEmpty() ? 0 : QFileInfo(s.filePath).size();
+	panel_->setStatus(state, fmtDuration(recordedNow(s, nowMs)), fmtFileSize(fileSize));
 }
 
 void TimesDock::onSourcesChanged(const QStringList &names)
@@ -239,6 +251,7 @@ void TimesDock::onRecordEvent(const RecEventInfo &e)
 		Session s;
 		s.key = e.key;
 		s.source = e.source;
+		s.filePath = e.filePath;
 		s.started = e.time;
 		s.runStartMs = nowMs;
 		s.active = true;
