@@ -41,6 +41,12 @@ private:
 		bool paused = false;
 		bool approxStart = false;
 		QString filePath;
+		quint64 totalBytes = 0;
+		int framesDropped = 0;
+		int totalFrames = 0;
+		quint64 lastStatsBytes = 0;
+		qint64 lastStatsMs = 0;
+		double bitrateKbps = 0.0;
 	};
 
 	qint64 recordedNow(const Session &s, qint64 nowMs) const;
@@ -58,4 +64,6 @@ private:
 	QHash<quint64, int> activeSession_;
 	int displaySession_ = -1;
 	bool sourceRecordFound_ = false;
+	void *cpuInfo_ = nullptr;
+	double cpuPercent_ = 0.0;
 };
