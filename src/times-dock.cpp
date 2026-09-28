@@ -402,7 +402,11 @@ void TimesDock::onRecordEvent(const RecEventInfo &e)
 
 void TimesDock::tick()
 {
-	if (cpuInfo_)
-		cpuPercent_ = os_cpu_usage_info_query(static_cast<os_cpu_usage_info_t *>(cpuInfo_));
+	static int statsTick = 0;
+	if (++statsTick >= 4) {
+		statsTick = 0;
+		if (cpuInfo_)
+			cpuPercent_ = os_cpu_usage_info_query(static_cast<os_cpu_usage_info_t *>(cpuInfo_));
+	}
 	updatePanel();
 }
