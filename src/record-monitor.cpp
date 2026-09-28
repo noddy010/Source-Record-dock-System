@@ -200,6 +200,22 @@ void RecordMonitor::refreshFilters()
 	}
 }
 
+void RecordMonitor::publishSources()
+{
+	refreshFilters();
+	QStringList names;
+	for (const FilterInfo &f : filters_) {
+		const QString shown = f.parentName.isEmpty() ? f.filterName : f.parentName;
+		if (!names.contains(shown))
+			names << shown;
+	}
+	names.sort(Qt::CaseInsensitive);
+	if (pollCount_ == 0 || names != lastSources_) {
+		lastSources_ = names;
+		emit sourcesChanged(names);
+	}
+}
+
 bool RecordMonitor::resolveLabel(const QString &outputName, const QString &directory, const QString &format,
 				 QString &label) const
 {
@@ -315,6 +331,11 @@ void RecordMonitor::poll()
 {
 	if (shutDown_)
 		return;
+
+	// About once a second, refresh the list of sources that have a Source Record filter.
+	if (pollCount_ % 20 == 0)
+		publishSources();
+	pollCount_++;
 
 	OutputEnumCtx ctx;
 	obs_enum_outputs(enumOutputsCb, &ctx);

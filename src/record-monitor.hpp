@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QHash>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 
 #include <vector>
@@ -65,6 +66,8 @@ public:
 
 signals:
 	void recordEvent(const RecEventInfo &info);
+	// Names of every source (or scene) that currently has a Source Record filter, sorted.
+	void sourcesChanged(const QStringList &names);
 
 private:
 	struct Tracked {
@@ -83,6 +86,7 @@ private:
 	void track(obs_output_t *output, quint64 key);
 	void forget(quint64 key, bool emitStop);
 	void refreshFilters();
+	void publishSources();
 	bool resolveLabel(const QString &outputName, const QString &directory, const QString &format, QString &label) const;
 	void emitEvent(quint64 key, const QString &label, RecEventType type, const QDateTime &time, int code, bool approx);
 
@@ -90,6 +94,8 @@ private:
 	QHash<quint64, Tracked> tracked_;
 	QHash<quint64, bool> sessionOpen_; // per output: did we report a start without a stop yet?
 	std::vector<FilterInfo> filters_;
+	QStringList lastSources_;
+	int pollCount_ = 0;
 	bool shutDown_ = false;
 
 };
