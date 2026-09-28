@@ -11,6 +11,9 @@
 #include <QSizePolicy>
 #include <QVBoxLayout>
 
+#include <obs.h>
+#include <util/platform.h>
+
 #include <algorithm>
 
 class StatusPanel final : public QWidget {
@@ -20,17 +23,18 @@ public:
 	explicit StatusPanel(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("cleanRecordingPanel"));
-		setMinimumSize(300, 220);
+		setMinimumSize(320, 260);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	}
 
-	void setStatus(State state, const QString &timeText, const QString &sizeText)
+	void setStatus(State state, const QString &timeText, const QString &sizeText, const QString &statsText)
 	{
-		if (state_ == state && timeText_ == timeText && sizeText_ == sizeText)
+		if (state_ == state && timeText_ == timeText && sizeText_ == sizeText && statsText_ == statsText)
 			return;
 		state_ = state;
 		timeText_ = timeText;
 		sizeText_ = sizeText;
+		statsText_ = statsText;
 		update();
 	}
 
@@ -107,6 +111,14 @@ protected:
 		p.drawText(QRectF(outer.left(), outer.top() + 165, outer.width(), 24),
 			   Qt::AlignCenter, sizeText_);
 
+		QFont statsFont = font();
+		statsFont.setBold(true);
+		statsFont.setPointSizeF(std::max(8.0, font().pointSizeF()));
+		p.setFont(statsFont);
+		p.setPen(QColor("#b5b5b5"));
+		p.drawText(QRectF(outer.left() + 10, outer.top() + 190, outer.width() - 20, 40),
+			   Qt::AlignCenter, statsText_);
+
 		QFont footer = font();
 		footer.setPointSizeF(std::max(8.0, font().pointSizeF() - 1.0));
 		p.setFont(footer);
@@ -145,6 +157,7 @@ private:
 	State state_ = State::Stopped;
 	QString timeText_ = QStringLiteral("00:00:00");
 	QString sizeText_ = QStringLiteral("FILE SIZE 0 B");
+	QString statsText_ = QStringLiteral("CPU --%   FPS --   BITRATE --   DROP --");
 };
 
 TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
@@ -161,6 +174,8 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 
 	panel_ = new StatusPanel(this);
 	layout->addWidget(panel_, 1);
+
+	cpuInfo_ = os_cpu_usage_info_start();
 
 	monitor_ = new RecordMonitor(this);
 	connect(monitor_, &RecordMonitor::recordEvent, this, &TimesDock::onRecordEvent);
@@ -181,6 +196,10 @@ TimesDock::~TimesDock()
 void TimesDock::shutdown()
 {
 	tickTimer_.stop();
+	if (cpuInfo_) {
+		os_cpu_usage_info_destroy(static_cast<os_cpu_usage_info_t *>(cpuInfo_));
+		cpuInfo_ = nullptr;
+	}
 	if (monitor_)
 		monitor_->shutdown();
 }
@@ -194,6 +213,25 @@ QString TimesDock::fmtDuration(qint64 ms)
 		.arg(total / 3600, 2, 10, QLatin1Char('0'))
 		.arg((total / 60) % 60, 2, 10, QLatin1Char('0'))
 		.arg(total % 60, 2, 10, QLatin1Char('0'));
+}
+
+
+QString TimesDock::fmtFileSize(qint64 bytes)
+{
+	if (bytes < 0)
+		bytes = 0;
+	static const char *units[] = {"B", "KB", "MB", "GB", "TB"};
+	double value = static_cast<double>(bytes);
+	int unit = 0;
+	while (value >= 1024.0 && unit < 4) {
+		value /= 1024.0;
+		++unit;
+	}
+	if (unit == 0)
+		return QStringLiteral("FILE SIZE %1 B").arg(bytes);
+	return QStringLiteral("FILE SIZE %1 %2")
+		.arg(value, 0, 'f', value >= 100.0 ? 0 : 1)
+		.arg(QString::fromLatin1(units[unit]));
 }
 
 qint64 TimesDock::recordedNow(const Session &s, qint64 nowMs) const
@@ -217,7 +255,7 @@ void TimesDock::updatePanel()
 
 	const int idx = latestSessionIndex();
 	if (idx < 0 || idx >= sessions_.size()) {
-		panel_->setStatus(StatusPanel::State::Stopped, QStringLiteral("00:00:00"), QStringLiteral("FILE SIZE 0 B"));
+		panel_->setStatus(StatusPanel::State::Stopped, QStringLiteral("00:00:00"), QStringLiteral("FILE SIZE 0 B"), QStringLiteral("CPU --%   FPS --   BITRATE --   DROP --"));
 		return;
 	}
 
@@ -230,8 +268,21 @@ void TimesDock::updatePanel()
 	else if (s.active)
 		state = StatusPanel::State::Recording;
 
-	const qint64 fileSize = s.filePath.isEmpty() ? 0 : QFileInfo(s.filePath).size();
-	panel_->setStatus(state, fmtDuration(recordedNow(s, nowMs)), fmtFileSize(fileSize));
+	const qint64 fileSize = s.totalBytes > 0 ? static_cast<qint64>(s.totalBytes) : (s.filePath.isEmpty() ? 0 : QFileInfo(s.filePath).size());
+	const double fps = obs_get_active_fps();
+	const QString fpsText = fps > 0.0 ? QString::number(fps, 'f', 1) : QStringLiteral("--");
+	const QString bitrateText = s.bitrateKbps > 0.0
+		? QStringLiteral("%1 Mbps").arg(s.bitrateKbps / 1000.0, 0, 'f', 1)
+		: QStringLiteral("--");
+	const QString dropText = QStringLiteral("%1 (%2%)")
+		.arg(s.framesDropped)
+		.arg(s.totalFrames > 0 ? (100.0 * s.framesDropped / s.totalFrames) : 0.0, 0, 'f', 2);
+	const QString stats = QStringLiteral("CPU %1%   FPS %2   BITRATE %3   DROP %4")
+		.arg(cpuPercent_, 0, 'f', 1)
+		.arg(fpsText)
+		.arg(bitrateText)
+		.arg(dropText);
+	panel_->setStatus(state, fmtDuration(recordedNow(s, nowMs)), fmtFileSize(fileSize), stats);
 }
 
 void TimesDock::onSourcesChanged(const QStringList &names)
@@ -305,6 +356,22 @@ void TimesDock::onRecordEvent(const RecEventInfo &e)
 		displaySession_ = idx;
 		break;
 
+	case RecEventType::Stats:
+		if (idx >= 0 && idx < sessions_.size()) {
+			Session &s = sessions_[idx];
+			const qint64 t = e.time.toMSecsSinceEpoch();
+			if (s.lastStatsMs > 0 && t > s.lastStatsMs && e.totalBytes >= s.lastStatsBytes) {
+				const double seconds = static_cast<double>(t - s.lastStatsMs) / 1000.0;
+				s.bitrateKbps = (static_cast<double>(e.totalBytes - s.lastStatsBytes) * 8.0 / 1000.0) / seconds;
+			}
+			s.totalBytes = e.totalBytes;
+			s.framesDropped = e.framesDropped;
+			s.totalFrames = e.totalFrames;
+			s.lastStatsBytes = e.totalBytes;
+			s.lastStatsMs = t;
+		}
+		break;
+
 	case RecEventType::Stopped:
 		if (idx < 0)
 			break;
@@ -335,5 +402,7 @@ void TimesDock::onRecordEvent(const RecEventInfo &e)
 
 void TimesDock::tick()
 {
+	if (cpuInfo_)
+		cpuPercent_ = os_cpu_usage_info_query(static_cast<os_cpu_usage_info_t *>(cpuInfo_));
 	updatePanel();
 }
