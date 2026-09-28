@@ -116,7 +116,7 @@ protected:
 		statsFont.setPointSizeF(std::max(8.0, font().pointSizeF()));
 		p.setFont(statsFont);
 		p.setPen(QColor("#b5b5b5"));
-		p.drawText(QRectF(outer.left() + 10, outer.top() + 190, outer.width() - 20, 40),
+		p.drawText(QRectF(outer.left() + 10, outer.top() + 188, outer.width() - 20, 46),
 			   Qt::AlignCenter, statsText_);
 
 		QFont footer = font();
@@ -272,12 +272,12 @@ void TimesDock::updatePanel()
 	const double fps = obs_get_active_fps();
 	const QString fpsText = fps > 0.0 ? QString::number(fps, 'f', 1) : QStringLiteral("--");
 	const QString bitrateText = s.bitrateKbps > 0.0
-		? QStringLiteral("%1 Mbps").arg(s.bitrateKbps / 1000.0, 0, 'f', 1)
+		? QStringLiteral("%1 kb/s").arg(s.bitrateKbps, 0, 'f', 0)
 		: QStringLiteral("--");
 	const QString dropText = QStringLiteral("%1 (%2%)")
 		.arg(s.framesDropped)
 		.arg(s.totalFrames > 0 ? (100.0 * s.framesDropped / s.totalFrames) : 0.0, 0, 'f', 2);
-	const QString stats = QStringLiteral("CPU %1%   FPS %2   BITRATE %3   DROP %4")
+	const QString stats = QStringLiteral("CPU %1%   FPS %2\nBITRATE %3   DROP %4")
 		.arg(cpuPercent_, 0, 'f', 1)
 		.arg(fpsText)
 		.arg(bitrateText)
