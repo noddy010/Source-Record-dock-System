@@ -360,9 +360,16 @@ void TimesDock::onRecordEvent(const RecEventInfo &e)
 		if (idx >= 0 && idx < sessions_.size()) {
 			Session &s = sessions_[idx];
 			const qint64 t = e.time.toMSecsSinceEpoch();
-			if (s.lastStatsMs > 0 && t > s.lastStatsMs && e.totalBytes >= s.lastStatsBytes) {
-				const double seconds = static_cast<double>(t - s.lastStatsMs) / 1000.0;
-				s.bitrateKbps = (static_cast<double>(e.totalBytes - s.lastStatsBytes) * 8.0 / 1000.0) / seconds;
+			// Keep the other stats live, but calculate/display bitrate from a full
+			// one-second byte interval so the number does not jump around every poll.
+			if (s.lastBitrateMs > 0 && t - s.lastBitrateMs >= 1000 && e.totalBytes >= s.lastBitrateBytes) {
+				const double seconds = static_cast<double>(t - s.lastBitrateMs) / 1000.0;
+				s.bitrateKbps = (static_cast<double>(e.totalBytes - s.lastBitrateBytes) * 8.0 / 1000.0) / seconds;
+				s.lastBitrateBytes = e.totalBytes;
+				s.lastBitrateMs = t;
+			} else if (s.lastBitrateMs == 0) {
+				s.lastBitrateBytes = e.totalBytes;
+				s.lastBitrateMs = t;
 			}
 			s.totalBytes = e.totalBytes;
 			s.framesDropped = e.framesDropped;
@@ -402,11 +409,7 @@ void TimesDock::onRecordEvent(const RecEventInfo &e)
 
 void TimesDock::tick()
 {
-	static int statsTick = 0;
-	if (++statsTick >= 4) {
-		statsTick = 0;
-		if (cpuInfo_)
-			cpuPercent_ = os_cpu_usage_info_query(static_cast<os_cpu_usage_info_t *>(cpuInfo_));
-	}
+	if (cpuInfo_)
+		cpuPercent_ = os_cpu_usage_info_query(static_cast<os_cpu_usage_info_t *>(cpuInfo_));
 	updatePanel();
 }
