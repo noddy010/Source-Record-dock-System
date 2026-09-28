@@ -373,6 +373,20 @@ void RecordMonitor::poll()
 	for (quint64 key : gone)
 		forget(key, true);
 
-	for (obs_output_t *output : ctx.outputs)
+	for (obs_output_t *output : ctx.outputs) {
+		const quint64 key = keyOf(output);
+		auto it = tracked_.constFind(key);
+		if (it != tracked_.constEnd() && it->resolved && obs_output_active(output)) {
+			RecEventInfo info;
+			info.key = key;
+			info.source = it->label;
+			info.type = RecEventType::Stats;
+			info.time = QDateTime::currentDateTime();
+			info.totalBytes = obs_output_get_total_bytes(output);
+			info.framesDropped = obs_output_get_frames_dropped(output);
+			info.totalFrames = obs_output_get_total_frames(output);
+			emit recordEvent(info);
+		}
 		obs_output_release(output);
+	}
 }
