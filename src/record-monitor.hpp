@@ -38,6 +38,7 @@ struct RecEventInfo {
 	QDateTime time;           // local wall-clock time the event happened
 	int stopCode = 0;         // for Stopped: 0 = clean stop, otherwise an OBS_OUTPUT_* error code
 	bool approximate = false; // true when the event was detected by polling instead of a signal
+	QString filePath;          // actual output path supplied by Source Record
 };
 
 /*
@@ -62,7 +63,7 @@ public:
 
 	// Called (via the UI thread) by the libobs signal callbacks.
 	void handleSignal(quint64 key, const QString &outputName, const QString &directory, const QString &format,
-			  RecEventType type, const QDateTime &time, int code);
+			  const QString &filePath, RecEventType type, const QDateTime &time, int code);
 
 signals:
 	void recordEvent(const RecEventInfo &info);
