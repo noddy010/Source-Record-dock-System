@@ -29,7 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <vector>
 
-enum class RecEventType { Started, Paused, Resumed, Stopped };
+enum class RecEventType { Started, Paused, Resumed, Stopped, Stats };
 
 struct RecEventInfo {
 	quint64 key = 0;          // identifies one Source Record file output
@@ -39,6 +39,9 @@ struct RecEventInfo {
 	int stopCode = 0;         // for Stopped: 0 = clean stop, otherwise an OBS_OUTPUT_* error code
 	bool approximate = false; // true when the event was detected by polling instead of a signal
 	QString filePath;          // actual output path supplied by Source Record
+	quint64 totalBytes = 0;
+	int framesDropped = 0;
+	int totalFrames = 0;
 };
 
 /*
