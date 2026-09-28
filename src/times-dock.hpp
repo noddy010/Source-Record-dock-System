@@ -46,6 +46,8 @@ private:
 		int totalFrames = 0;
 		quint64 lastStatsBytes = 0;
 		qint64 lastStatsMs = 0;
+		quint64 lastBitrateBytes = 0;
+		qint64 lastBitrateMs = 0;
 		double bitrateKbps = 0.0;
 	};
 
