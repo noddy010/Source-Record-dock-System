@@ -1,5 +1,6 @@
 #include "times-dock.hpp"
 
+#include <QColor>
 #include <QFont>
 #include <QFontDatabase>
 #include <QLinearGradient>
@@ -10,8 +11,6 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
-
-namespace {
 
 class StatusPanel final : public QWidget {
 public:
@@ -136,8 +135,6 @@ private:
 	State state_ = State::Stopped;
 	QString timeText_ = QStringLiteral("00:00:00");
 };
-
-} // namespace
 
 TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 {
