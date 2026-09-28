@@ -40,6 +40,7 @@ private:
 		bool active = false;
 		bool paused = false;
 		bool approxStart = false;
+		QString filePath;
 	};
 
 	qint64 recordedNow(const Session &s, qint64 nowMs) const;
@@ -47,6 +48,7 @@ private:
 	void updatePanel();
 
 	static QString fmtDuration(qint64 ms);
+	static QString fmtFileSize(qint64 bytes);
 
 	RecordMonitor *monitor_ = nullptr;
 	StatusPanel *panel_ = nullptr;
