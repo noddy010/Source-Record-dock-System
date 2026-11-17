@@ -1,0 +1,36 @@
+name: Build Windows plugin
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset windows-x64
+
+      - name: Build
+        run: cmake --build --preset windows-x64 --config Release --parallel
+
+      - name: Install into release folder
+        run: cmake --install build_x64 --config Release --prefix "${{ github.workspace }}/release/Release"
+
+      # OBS Studio 33 wants the DLL next to the data folder (no bin/64bit).
+      - name: Use the OBS 33 plugin folder layout
+        shell: pwsh
+        run: |
+          $p = "${{ github.workspace }}/release/Release/obs-source-record-times"
+          Move-Item "$p/bin/64bit/*" $p
+          Remove-Item "$p/bin" -Recurse -Force
+          Get-ChildItem $p -Recurse | ForEach-Object { $_.FullName }
+
+      - name: Upload plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: obs-source-record-times-obs33-windows-x64
+          path: release/Release
