@@ -217,7 +217,7 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 {
 	sourceRecordFound_ = RecordMonitor::sourceRecordInstalled();
 
-	setMinimumSize(360, 390);
+	setMinimumSize(360, 340);
 	setObjectName(QStringLiteral("sourceRecordTimesDock"));
 	setStyleSheet(QStringLiteral("QWidget#sourceRecordTimesDock { background: #111111; }"));
 
