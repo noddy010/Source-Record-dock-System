@@ -54,6 +54,7 @@ private:
 	qint64 recordedNow(const Session &s, qint64 nowMs) const;
 	int latestSessionIndex() const;
 	void updatePanel();
+	void updateGpuUsage();
 
 	static QString fmtDuration(qint64 ms);
 	static QString fmtFileSize(qint64 bytes);
@@ -68,4 +69,8 @@ private:
 	bool sourceRecordFound_ = false;
 	void *cpuInfo_ = nullptr;
 	double cpuPercent_ = 0.0;
+	void *gpuQuery_ = nullptr;
+	void *gpuCounter_ = nullptr;
+	qint64 lastGpuPollMs_ = 0;
+	double gpu3DPercent_ = -1.0;
 };
