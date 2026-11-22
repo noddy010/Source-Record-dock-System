@@ -11,6 +11,7 @@
 #include <QSizePolicy>
 #include <QVBoxLayout>
 #include <QRegularExpression>
+#include <QStringList>
 #include <QHash>
 
 #include <obs.h>
@@ -320,7 +321,7 @@ void TimesDock::shutdown()
 		gpuQuery_ = nullptr;
 		gpuCounter_ = nullptr;
 	}
-		if (cpuSpeedQuery_) {
+	if (cpuSpeedQuery_) {
 		PdhCloseQuery(static_cast<PDH_HQUERY>(cpuSpeedQuery_));
 		cpuSpeedQuery_ = nullptr;
 		cpuSpeedCounter_ = nullptr;
