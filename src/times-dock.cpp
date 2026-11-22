@@ -11,6 +11,7 @@
 #include <QSizePolicy>
 #include <QVBoxLayout>
 #include <QRegularExpression>
+#include <QHash>
 
 #include <obs.h>
 #include <util/platform.h>
@@ -22,7 +23,7 @@
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>
-#include <dxgi1_2.h>
+#include <dxgi1_4.h>
 #endif
 
 #include <algorithm>
@@ -68,7 +69,7 @@ public:
 	explicit StatusPanel(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("cleanRecordingPanel"));
-		setMinimumSize(320, 260);
+		setMinimumSize(360, 330);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	}
 
@@ -161,7 +162,7 @@ protected:
 		statsFont.setPointSizeF(std::max(8.0, font().pointSizeF()));
 		p.setFont(statsFont);
 		p.setPen(QColor("#b5b5b5"));
-		p.drawText(QRectF(outer.left() + 10, outer.top() + 188, outer.width() - 20, 46),
+		p.drawText(QRectF(outer.left() + 10, outer.top() + 188, outer.width() - 20, 100),
 			   Qt::AlignCenter, statsText_);
 
 		QFont footer = font();
@@ -209,7 +210,7 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 {
 	sourceRecordFound_ = RecordMonitor::sourceRecordInstalled();
 
-	setMinimumSize(320, 240);
+	setMinimumSize(360, 330);
 	setObjectName(QStringLiteral("sourceRecordTimesDock"));
 	setStyleSheet(QStringLiteral("QWidget#sourceRecordTimesDock { background: #111111; }"));
 
@@ -230,10 +231,51 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 		gpuQuery_ = query;
 		gpuCounter_ = counter;
 		gpuAdapterLuid_ = findNvidiaAdapterLuid();
-		// Prime the rate counter. A valid percentage is available on a later sample.
 		PdhCollectQueryData(query);
 	} else if (query) {
 		PdhCloseQuery(query);
+	}
+
+	IDXGIFactory1 *factory = nullptr;
+	if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory)))) {
+		for (UINT index = 0;; ++index) {
+			IDXGIAdapter1 *adapter = nullptr;
+			if (factory->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND) break;
+			if (!adapter) continue;
+			DXGI_ADAPTER_DESC1 desc = {};
+			if (SUCCEEDED(adapter->GetDesc1(&desc)) &&
+			    QString::fromWCharArray(desc.Description).contains(QStringLiteral("NVIDIA"), Qt::CaseInsensitive)) {
+				gpuDedicatedBytes_ = static_cast<quint64>(desc.DedicatedVideoMemory);
+				IDXGIAdapter3 *adapter3 = nullptr;
+				if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void **>(&adapter3))))
+					gpuDxgiAdapter_ = adapter3;
+				adapter->Release();
+				break;
+			}
+			adapter->Release();
+		}
+		factory->Release();
+	}
+
+	// NVML is optional and loaded dynamically: no extra plugin/runtime dependency.
+	HMODULE nvml = LoadLibraryW(L"nvml.dll");
+	if (nvml) {
+		auto init = reinterpret_cast<int (*)()>(GetProcAddress(nvml, "nvmlInit_v2"));
+		auto getHandle = reinterpret_cast<int (*)(unsigned int, void **)>(GetProcAddress(nvml, "nvmlDeviceGetHandleByIndex_v2"));
+		auto getTemp = reinterpret_cast<int (*)(void *, int, unsigned int *)>(GetProcAddress(nvml, "nvmlDeviceGetTemperature"));
+		auto getPower = reinterpret_cast<int (*)(void *, unsigned int *)>(GetProcAddress(nvml, "nvmlDeviceGetPowerUsage"));
+		auto shutdownNvml = reinterpret_cast<int (*)()>(GetProcAddress(nvml, "nvmlShutdown"));
+		void *device = nullptr;
+		if (init && getHandle && getTemp && getPower && init() == 0 && getHandle(0, &device) == 0) {
+			nvmlLibrary_ = nvml;
+			nvmlDevice_ = device;
+			nvmlGetTemperature_ = reinterpret_cast<void *>(getTemp);
+			nvmlGetPowerUsage_ = reinterpret_cast<void *>(getPower);
+			nvmlShutdown_ = reinterpret_cast<void *>(shutdownNvml);
+		} else {
+			if (shutdownNvml) shutdownNvml();
+			FreeLibrary(nvml);
+		}
 	}
 #endif
 
@@ -261,6 +303,16 @@ void TimesDock::shutdown()
 		PdhCloseQuery(static_cast<PDH_HQUERY>(gpuQuery_));
 		gpuQuery_ = nullptr;
 		gpuCounter_ = nullptr;
+	}
+	if (gpuDxgiAdapter_) {
+		static_cast<IDXGIAdapter3 *>(gpuDxgiAdapter_)->Release();
+		gpuDxgiAdapter_ = nullptr;
+	}
+	if (nvmlLibrary_) {
+		if (nvmlShutdown_) reinterpret_cast<int (*)()>(nvmlShutdown_)();
+		FreeLibrary(static_cast<HMODULE>(nvmlLibrary_));
+		nvmlLibrary_ = nullptr;
+		nvmlDevice_ = nullptr;
 	}
 #endif
 	if (cpuInfo_) {
@@ -344,15 +396,16 @@ void TimesDock::updatePanel()
 	const QString dropText = QStringLiteral("%1 (%2%)")
 		.arg(s.framesDropped)
 		.arg(s.totalFrames > 0 ? (100.0 * s.framesDropped / s.totalFrames) : 0.0, 0, 'f', 2);
-	const QString gpuText = gpu3DPercent_ >= 0.0
-		? QStringLiteral("%1").arg(gpu3DPercent_, 0, 'f', 0)
+	auto pct = [](double v) { return v >= 0.0 ? QString::number(v, 'f', 0) + QLatin1Char('%') : QStringLiteral("--"); };
+	const QString memoryText = gpuMemoryBudgetBytes_ > 0
+		? QStringLiteral("%1/%2MB").arg(gpuMemoryUsedBytes_ / (1024 * 1024)).arg(gpuMemoryBudgetBytes_ / (1024 * 1024))
 		: QStringLiteral("--");
-	const QString stats = QStringLiteral("CPU %1%   GPU 3D %2%   FPS %3\nBITRATE %4   DROP %5")
-		.arg(cpuPercent_, 0, 'f', 1)
-		.arg(gpuText)
-		.arg(fpsText)
-		.arg(bitrateText)
-		.arg(dropText);
+	const QString tempText = gpuTemperatureC_ >= 0.0 ? QStringLiteral("%1C").arg(gpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
+	const QString powerText = gpuPowerWatts_ >= 0.0 ? QStringLiteral("%1W").arg(gpuPowerWatts_, 0, 'f', 1) : QStringLiteral("N/A");
+	const QString stats = QStringLiteral("CPU %1%   3D %2   ENC %3   DEC %4\\nCOPY %5   VRAM %6\\nTEMP %7   POWER %8\\nFPS %9   BITRATE %10   DROP %11")
+		.arg(cpuPercent_, 0, 'f', 1).arg(pct(gpu3DPercent_)).arg(pct(gpuEncodePercent_))
+		.arg(pct(gpuDecodePercent_)).arg(pct(gpuCopyPercent_)).arg(memoryText)
+		.arg(tempText).arg(powerText).arg(fpsText).arg(bitrateText).arg(dropText);
 	panel_->setStatus(state, fmtDuration(recordedNow(s, nowMs)), fmtFileSize(fileSize), stats);
 }
 
@@ -481,69 +534,69 @@ void TimesDock::onRecordEvent(const RecEventInfo &e)
 void TimesDock::updateGpuUsage()
 {
 #ifdef _WIN32
-	if (!gpuQuery_ || !gpuCounter_)
-		return;
-
 	const qint64 now = QDateTime::currentMSecsSinceEpoch();
-	if (lastGpuPollMs_ != 0 && now - lastGpuPollMs_ < 1000)
-		return;
+	if (lastGpuPollMs_ != 0 && now - lastGpuPollMs_ < 1000) return;
 	lastGpuPollMs_ = now;
 
-	const PDH_HQUERY query = static_cast<PDH_HQUERY>(gpuQuery_);
-	const PDH_HCOUNTER counter = static_cast<PDH_HCOUNTER>(gpuCounter_);
-	if (PdhCollectQueryData(query) != ERROR_SUCCESS)
-		return;
-
-	DWORD bufferBytes = 0;
-	DWORD itemCount = 0;
-	PDH_STATUS status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bufferBytes, &itemCount, nullptr);
-	if (status != PDH_MORE_DATA || bufferBytes == 0 || itemCount == 0) {
-		gpu3DPercent_ = -1.0;
-		return;
+	if (gpuQuery_ && gpuCounter_) {
+		const auto query = static_cast<PDH_HQUERY>(gpuQuery_);
+		const auto counter = static_cast<PDH_HCOUNTER>(gpuCounter_);
+		if (PdhCollectQueryData(query) == ERROR_SUCCESS) {
+			DWORD bytes = 0, count = 0;
+			PDH_STATUS status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, nullptr);
+			if (status == PDH_MORE_DATA && bytes && count) {
+				std::vector<unsigned char> buffer(bytes);
+				auto *items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
+				status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, items);
+				if (status == ERROR_SUCCESS) {
+					QHash<QString, double> engines[4];
+					static const QRegularExpression pattern(
+						QStringLiteral("^(?:pid_\\d+_)?(.+)_engtype_(3D|VideoEncode|VideoDecode|Copy)$"),
+						QRegularExpression::CaseInsensitiveOption);
+					for (DWORD i = 0; i < count; ++i) {
+						if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
+						    items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA) continue;
+						const QString instance = QString::fromWCharArray(items[i].szName);
+						if (!gpuAdapterLuid_.isEmpty() && !instance.contains(gpuAdapterLuid_, Qt::CaseInsensitive)) continue;
+						const auto match = pattern.match(instance);
+						if (!match.hasMatch()) continue;
+						const QString type = match.captured(2);
+						int n = type.compare(QStringLiteral("3D"), Qt::CaseInsensitive) == 0 ? 0 :
+							type.compare(QStringLiteral("VideoEncode"), Qt::CaseInsensitive) == 0 ? 1 :
+							type.compare(QStringLiteral("VideoDecode"), Qt::CaseInsensitive) == 0 ? 2 :
+							type.compare(QStringLiteral("Copy"), Qt::CaseInsensitive) == 0 ? 3 : -1;
+						if (n >= 0) engines[n][match.captured(1)] += items[i].FmtValue.doubleValue;
+					}
+					auto busiest = [](const QHash<QString, double> &map) {
+						double value = -1.0;
+						for (auto it = map.cbegin(); it != map.cend(); ++it) value = std::max(value, it.value());
+						return value < 0.0 ? -1.0 : std::clamp(value, 0.0, 100.0);
+					};
+					gpu3DPercent_ = busiest(engines[0]);
+					gpuEncodePercent_ = busiest(engines[1]);
+					gpuDecodePercent_ = busiest(engines[2]);
+					gpuCopyPercent_ = busiest(engines[3]);
+				}
+			}
+		}
 	}
-
-	std::vector<unsigned char> buffer(bufferBytes);
-	auto *items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
-	status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bufferBytes, &itemCount, items);
-	if (status != ERROR_SUCCESS) {
-		gpu3DPercent_ = -1.0;
-		return;
+	if (gpuDxgiAdapter_) {
+		DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+		if (SUCCEEDED(static_cast<IDXGIAdapter3 *>(gpuDxgiAdapter_)->QueryVideoMemoryInfo(
+				0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
+			gpuMemoryUsedBytes_ = info.CurrentUsage;
+			gpuMemoryBudgetBytes_ = info.Budget;
+		}
 	}
-
-	// GPU Engine counters are reported per process. Sum processes sharing the same
-	// physical 3D engine, then use the busiest 3D engine (Task Manager-style).
-	static const QRegularExpression enginePattern(
-		QStringLiteral("^(?:pid_\\d+_)?(.+)_engtype_3D$"),
-		QRegularExpression::CaseInsensitiveOption);
-	QHash<QString, double> engineTotals;
-	for (DWORD i = 0; i < itemCount; ++i) {
-		if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
-		    items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
-			continue;
-		const QString instance = QString::fromWCharArray(items[i].szName);
-		if (!gpuAdapterLuid_.isEmpty() &&
-		    !instance.contains(gpuAdapterLuid_, Qt::CaseInsensitive))
-			continue;
-		const auto match = enginePattern.match(instance);
-		if (!match.hasMatch())
-			continue;
-		engineTotals[match.captured(1)] += items[i].FmtValue.doubleValue;
+	if (nvmlDevice_ && nvmlGetTemperature_ && nvmlGetPowerUsage_) {
+		unsigned int value = 0;
+		if (reinterpret_cast<int (*)(void *, int, unsigned int *)>(nvmlGetTemperature_)(nvmlDevice_, 0, &value) == 0)
+			gpuTemperatureC_ = static_cast<double>(value);
+		if (reinterpret_cast<int (*)(void *, unsigned int *)>(nvmlGetPowerUsage_)(nvmlDevice_, &value) == 0)
+			gpuPowerWatts_ = static_cast<double>(value) / 1000.0;
 	}
-
-	if (engineTotals.isEmpty()) {
-		gpu3DPercent_ = -1.0;
-		return;
-	}
-
-	double busiestEngine = 0.0;
-	for (auto it = engineTotals.cbegin(); it != engineTotals.cend(); ++it)
-		busiestEngine = std::max(busiestEngine, it.value());
-	gpu3DPercent_ = std::clamp(busiestEngine, 0.0, 100.0);
-#else
-	gpu3DPercent_ = -1.0;
 #endif
 }
-
 void TimesDock::tick()
 {
 	if (cpuInfo_)
