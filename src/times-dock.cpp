@@ -162,8 +162,14 @@ protected:
 		statsFont.setPointSizeF(std::max(8.0, font().pointSizeF()));
 		p.setFont(statsFont);
 		p.setPen(QColor("#b5b5b5"));
-		p.drawText(QRectF(outer.left() + 22, outer.top() + 188, outer.width() - 44, 150),
-			   Qt::AlignLeft | Qt::AlignVCenter, statsText_);
+		const QStringList statLines = statsText_.split(QLatin1Char('\n'));
+		const qreal statTop = outer.top() + 194;
+		const qreal statStep = 34.0;
+		for (int i = 0; i < statLines.size(); ++i) {
+			p.drawText(QRectF(outer.left() + 22, statTop + i * statStep,
+					  outer.width() - 44, 24),
+				   Qt::AlignLeft | Qt::AlignVCenter, statLines.at(i));
+		}
 
 		QFont footer = font();
 		footer.setPointSizeF(std::max(8.0, font().pointSizeF() - 1.0));
@@ -203,7 +209,7 @@ private:
 	State state_ = State::Stopped;
 	QString timeText_ = QStringLiteral("00:00:00");
 	QString sizeText_ = QStringLiteral("FILE SIZE 0 B");
-	QString statsText_ = QStringLiteral("CPU --%   TEMP --°C\nGPU --%   TEMP --°C   POWER --W\n3D --%   ENC --%   DEC --%   COPY --%\nFPS --   BITRATE --   DROP --");
+	QString statsText_ = QStringLiteral("CPU --%   SPEED -- MHz\nGPU --%   TEMP --°C   POWER --W\n3D --%   ENC --%   DEC --%   COPY --%\nFPS --   BITRATE --   DROP --");
 };
 
 TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
@@ -224,15 +230,15 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 	cpuInfo_ = os_cpu_usage_info_start();
 
 #ifdef _WIN32
-	PDH_HQUERY cpuTempQuery = nullptr;
-	PDH_HCOUNTER cpuTempCounter = nullptr;
-	if (PdhOpenQueryW(nullptr, 0, &cpuTempQuery) == ERROR_SUCCESS &&
-	    PdhAddEnglishCounterW(cpuTempQuery, L"\\Thermal Zone Information(*)\\Temperature", 0, &cpuTempCounter) == ERROR_SUCCESS) {
-		cpuTempQuery_ = cpuTempQuery;
-		cpuTempCounter_ = cpuTempCounter;
-		PdhCollectQueryData(cpuTempQuery);
-	} else if (cpuTempQuery) {
-		PdhCloseQuery(cpuTempQuery);
+	PDH_HQUERY cpuSpeedQuery = nullptr;
+	PDH_HCOUNTER cpuSpeedCounter = nullptr;
+	if (PdhOpenQueryW(nullptr, 0, &cpuSpeedQuery) == ERROR_SUCCESS &&
+	    PdhAddEnglishCounterW(cpuSpeedQuery, L"\\Processor Information(_Total)\\Processor Frequency", 0, &cpuSpeedCounter) == ERROR_SUCCESS) {
+		cpuSpeedQuery_ = cpuSpeedQuery;
+		cpuSpeedCounter_ = cpuSpeedCounter;
+		PdhCollectQueryData(cpuSpeedQuery);
+	} else if (cpuSpeedQuery) {
+		PdhCloseQuery(cpuSpeedQuery);
 	}
 
 	PDH_HQUERY query = nullptr;
@@ -314,35 +320,10 @@ void TimesDock::shutdown()
 		gpuQuery_ = nullptr;
 		gpuCounter_ = nullptr;
 	}
-	if (cpuTempQuery_) {
-		PdhCloseQuery(static_cast<PDH_HQUERY>(cpuTempQuery_));
-		cpuTempQuery_ = nullptr;
-		cpuTempCounter_ = nullptr;
-	}
-	if (cpuTempQuery_ && cpuTempCounter_) {
-		const auto query = static_cast<PDH_HQUERY>(cpuTempQuery_);
-		const auto counter = static_cast<PDH_HCOUNTER>(cpuTempCounter_);
-		if (PdhCollectQueryData(query) == ERROR_SUCCESS) {
-			DWORD bytes = 0, count = 0;
-			PDH_STATUS status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, nullptr);
-			if (status == PDH_MORE_DATA && bytes && count) {
-				std::vector<unsigned char> buffer(bytes);
-				auto *items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
-				status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, items);
-				if (status == ERROR_SUCCESS) {
-					double hottestC = -1.0;
-					for (DWORD i = 0; i < count; ++i) {
-						if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
-						    items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA) continue;
-						// Windows thermal-zone counters report tenths of Kelvin.
-						const double celsius = items[i].FmtValue.doubleValue / 10.0 - 273.15;
-						if (celsius > -40.0 && celsius < 150.0)
-							hottestC = std::max(hottestC, celsius);
-					}
-					cpuTemperatureC_ = hottestC;
-				}
-			}
-		}
+		if (cpuSpeedQuery_) {
+		PdhCloseQuery(static_cast<PDH_HQUERY>(cpuSpeedQuery_));
+		cpuSpeedQuery_ = nullptr;
+		cpuSpeedCounter_ = nullptr;
 	}
 	if (gpuDxgiAdapter_) {
 		static_cast<IDXGIAdapter3 *>(gpuDxgiAdapter_)->Release();
@@ -437,11 +418,13 @@ void TimesDock::updatePanel()
 		.arg(s.framesDropped)
 		.arg(s.totalFrames > 0 ? (100.0 * s.framesDropped / s.totalFrames) : 0.0, 0, 'f', 2);
 	auto pct = [](double v) { return v >= 0.0 ? QString::number(v, 'f', 0) + QLatin1Char('%') : QStringLiteral("--"); };
-	const QString cpuTempText = cpuTemperatureC_ >= 0.0 ? QStringLiteral("%1°C").arg(cpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
+	const QString cpuSpeedText = cpuSpeedMHz_ > 0.0
+		? QStringLiteral("%1 MHz").arg(cpuSpeedMHz_, 0, 'f', 0)
+		: QStringLiteral("N/A");
 	const QString gpuTempText = gpuTemperatureC_ >= 0.0 ? QStringLiteral("%1°C").arg(gpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
 	const QString powerText = gpuPowerWatts_ >= 0.0 ? QStringLiteral("%1W").arg(gpuPowerWatts_, 0, 'f', 1) : QStringLiteral("N/A");
-	const QString stats = QStringLiteral("CPU %1   TEMP %2\nGPU %3   TEMP %4   POWER %5\n3D %6   ENC %7   DEC %8   COPY %9\nFPS %10   BITRATE %11   DROP %12")
-		.arg(QString::number(cpuPercent_, 'f', 1) + QLatin1Char('%')).arg(cpuTempText).arg(pct(gpuOverallPercent_))
+	const QString stats = QStringLiteral("CPU %1   SPEED %2\nGPU %3   TEMP %4   POWER %5\n3D %6   ENC %7   DEC %8   COPY %9\nFPS %10   BITRATE %11   DROP %12")
+		.arg(QString::number(cpuPercent_, 'f', 1) + QLatin1Char('%')).arg(cpuSpeedText).arg(pct(gpuOverallPercent_))
 		.arg(gpuTempText).arg(powerText).arg(pct(gpu3DPercent_))
 		.arg(pct(gpuEncodePercent_)).arg(pct(gpuDecodePercent_)).arg(pct(gpuCopyPercent_))
 		.arg(fpsText).arg(bitrateText).arg(dropText);
@@ -624,6 +607,17 @@ void TimesDock::updateGpuUsage()
 					gpuOverallPercent_ = busiest(allEngines);
 				}
 			}
+		}
+	}
+	if (cpuSpeedQuery_ && cpuSpeedCounter_) {
+		const auto query = static_cast<PDH_HQUERY>(cpuSpeedQuery_);
+		const auto counter = static_cast<PDH_HCOUNTER>(cpuSpeedCounter_);
+		if (PdhCollectQueryData(query) == ERROR_SUCCESS) {
+			PDH_FMT_COUNTERVALUE value = {};
+			if (PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS &&
+			    (value.CStatus == PDH_CSTATUS_VALID_DATA || value.CStatus == PDH_CSTATUS_NEW_DATA) &&
+			    value.doubleValue > 0.0)
+				cpuSpeedMHz_ = value.doubleValue;
 		}
 	}
 	if (nvmlDevice_ && nvmlGetTemperature_ && nvmlGetPowerUsage_) {
