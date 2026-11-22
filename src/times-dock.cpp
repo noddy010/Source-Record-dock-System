@@ -440,7 +440,7 @@ void TimesDock::updatePanel()
 	const QString cpuTempText = cpuTemperatureC_ >= 0.0 ? QStringLiteral("%1°C").arg(cpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
 	const QString gpuTempText = gpuTemperatureC_ >= 0.0 ? QStringLiteral("%1°C").arg(gpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
 	const QString powerText = gpuPowerWatts_ >= 0.0 ? QStringLiteral("%1W").arg(gpuPowerWatts_, 0, 'f', 1) : QStringLiteral("N/A");
-	const QString stats = QStringLiteral("CPU %1   TEMP %2\\nGPU %3   TEMP %4   POWER %5\\n3D %6   ENC %7   DEC %8   COPY %9\\nFPS %10   BITRATE %11   DROP %12")
+	const QString stats = QStringLiteral("CPU %1   TEMP %2\nGPU %3   TEMP %4   POWER %5\n3D %6   ENC %7   DEC %8   COPY %9\nFPS %10   BITRATE %11   DROP %12")
 		.arg(pct(cpuPercent_)).arg(cpuTempText).arg(pct(gpuOverallPercent_))
 		.arg(gpuTempText).arg(powerText).arg(pct(gpu3DPercent_))
 		.arg(pct(gpuEncodePercent_)).arg(pct(gpuDecodePercent_)).arg(pct(gpuCopyPercent_))
