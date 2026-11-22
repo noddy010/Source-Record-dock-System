@@ -10,11 +10,18 @@
 #include <QRadialGradient>
 #include <QSizePolicy>
 #include <QVBoxLayout>
+#include <QRegularExpression>
 
 #include <obs.h>
 #include <util/platform.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <pdh.h>
+#endif
+
 #include <algorithm>
+#include <vector>
 
 class StatusPanel final : public QWidget {
 public:
@@ -177,6 +184,20 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 
 	cpuInfo_ = os_cpu_usage_info_start();
 
+#ifdef _WIN32
+	PDH_HQUERY query = nullptr;
+	PDH_HCOUNTER counter = nullptr;
+	if (PdhOpenQueryW(nullptr, 0, &query) == ERROR_SUCCESS &&
+	    PdhAddEnglishCounterW(query, L"\\GPU Engine(*)\\Utilization Percentage", 0, &counter) == ERROR_SUCCESS) {
+		gpuQuery_ = query;
+		gpuCounter_ = counter;
+		// Prime the rate counter. A valid percentage is available on a later sample.
+		PdhCollectQueryData(query);
+	} else if (query) {
+		PdhCloseQuery(query);
+	}
+#endif
+
 	monitor_ = new RecordMonitor(this);
 	connect(monitor_, &RecordMonitor::recordEvent, this, &TimesDock::onRecordEvent);
 	connect(monitor_, &RecordMonitor::sourcesChanged, this, &TimesDock::onSourcesChanged);
@@ -196,6 +217,13 @@ TimesDock::~TimesDock()
 void TimesDock::shutdown()
 {
 	tickTimer_.stop();
+#ifdef _WIN32
+	if (gpuQuery_) {
+		PdhCloseQuery(static_cast<PDH_HQUERY>(gpuQuery_));
+		gpuQuery_ = nullptr;
+		gpuCounter_ = nullptr;
+	}
+#endif
 	if (cpuInfo_) {
 		os_cpu_usage_info_destroy(static_cast<os_cpu_usage_info_t *>(cpuInfo_));
 		cpuInfo_ = nullptr;
@@ -277,8 +305,12 @@ void TimesDock::updatePanel()
 	const QString dropText = QStringLiteral("%1 (%2%)")
 		.arg(s.framesDropped)
 		.arg(s.totalFrames > 0 ? (100.0 * s.framesDropped / s.totalFrames) : 0.0, 0, 'f', 2);
-	const QString stats = QStringLiteral("CPU %1%   FPS %2\nBITRATE %3   DROP %4")
+	const QString gpuText = gpu3DPercent_ >= 0.0
+		? QStringLiteral("%1").arg(gpu3DPercent_, 0, 'f', 0)
+		: QStringLiteral("--");
+	const QString stats = QStringLiteral("CPU %1%   GPU 3D %2%   FPS %3\nBITRATE %4   DROP %5")
 		.arg(cpuPercent_, 0, 'f', 1)
+		.arg(gpuText)
 		.arg(fpsText)
 		.arg(bitrateText)
 		.arg(dropText);
@@ -407,9 +439,73 @@ void TimesDock::onRecordEvent(const RecEventInfo &e)
 	updatePanel();
 }
 
+void TimesDock::updateGpuUsage()
+{
+#ifdef _WIN32
+	if (!gpuQuery_ || !gpuCounter_)
+		return;
+
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	if (lastGpuPollMs_ != 0 && now - lastGpuPollMs_ < 1000)
+		return;
+	lastGpuPollMs_ = now;
+
+	const PDH_HQUERY query = static_cast<PDH_HQUERY>(gpuQuery_);
+	const PDH_HCOUNTER counter = static_cast<PDH_HCOUNTER>(gpuCounter_);
+	if (PdhCollectQueryData(query) != ERROR_SUCCESS)
+		return;
+
+	DWORD bufferBytes = 0;
+	DWORD itemCount = 0;
+	PDH_STATUS status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bufferBytes, &itemCount, nullptr);
+	if (status != PDH_MORE_DATA || bufferBytes == 0 || itemCount == 0) {
+		gpu3DPercent_ = -1.0;
+		return;
+	}
+
+	std::vector<unsigned char> buffer(bufferBytes);
+	auto *items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
+	status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bufferBytes, &itemCount, items);
+	if (status != ERROR_SUCCESS) {
+		gpu3DPercent_ = -1.0;
+		return;
+	}
+
+	// GPU Engine counters are reported per process. Sum processes sharing the same
+	// physical 3D engine, then use the busiest 3D engine (Task Manager-style).
+	static const QRegularExpression enginePattern(
+		QStringLiteral("^(?:pid_\\d+_)?(.+)_engtype_3D$"),
+		QRegularExpression::CaseInsensitiveOption);
+	QHash<QString, double> engineTotals;
+	for (DWORD i = 0; i < itemCount; ++i) {
+		if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
+		    items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
+			continue;
+		const QString instance = QString::fromWCharArray(items[i].szName);
+		const auto match = enginePattern.match(instance);
+		if (!match.hasMatch())
+			continue;
+		engineTotals[match.captured(1)] += items[i].FmtValue.doubleValue;
+	}
+
+	if (engineTotals.isEmpty()) {
+		gpu3DPercent_ = -1.0;
+		return;
+	}
+
+	double busiestEngine = 0.0;
+	for (auto it = engineTotals.cbegin(); it != engineTotals.cend(); ++it)
+		busiestEngine = std::max(busiestEngine, it.value());
+	gpu3DPercent_ = std::clamp(busiestEngine, 0.0, 100.0);
+#else
+	gpu3DPercent_ = -1.0;
+#endif
+}
+
 void TimesDock::tick()
 {
 	if (cpuInfo_)
 		cpuPercent_ = os_cpu_usage_info_query(static_cast<os_cpu_usage_info_t *>(cpuInfo_));
+	updateGpuUsage();
 	updatePanel();
 }
