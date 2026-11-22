@@ -69,7 +69,7 @@ public:
 	explicit StatusPanel(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("cleanRecordingPanel"));
-		setMinimumSize(360, 330);
+		setMinimumSize(360, 390);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	}
 
@@ -162,8 +162,8 @@ protected:
 		statsFont.setPointSizeF(std::max(8.0, font().pointSizeF()));
 		p.setFont(statsFont);
 		p.setPen(QColor("#b5b5b5"));
-		p.drawText(QRectF(outer.left() + 10, outer.top() + 188, outer.width() - 20, 100),
-			   Qt::AlignCenter, statsText_);
+		p.drawText(QRectF(outer.left() + 22, outer.top() + 188, outer.width() - 44, 150),
+			   Qt::AlignLeft | Qt::AlignVCenter, statsText_);
 
 		QFont footer = font();
 		footer.setPointSizeF(std::max(8.0, font().pointSizeF() - 1.0));
@@ -203,14 +203,14 @@ private:
 	State state_ = State::Stopped;
 	QString timeText_ = QStringLiteral("00:00:00");
 	QString sizeText_ = QStringLiteral("FILE SIZE 0 B");
-	QString statsText_ = QStringLiteral("CPU --%   FPS --   BITRATE --   DROP --");
+	QString statsText_ = QStringLiteral("CPU --%   TEMP --°C\nGPU --%   TEMP --°C   POWER --W\n3D --%   ENC --%   DEC --%   COPY --%\nFPS --   BITRATE --   DROP --");
 };
 
 TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 {
 	sourceRecordFound_ = RecordMonitor::sourceRecordInstalled();
 
-	setMinimumSize(360, 330);
+	setMinimumSize(360, 390);
 	setObjectName(QStringLiteral("sourceRecordTimesDock"));
 	setStyleSheet(QStringLiteral("QWidget#sourceRecordTimesDock { background: #111111; }"));
 
@@ -224,6 +224,17 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 	cpuInfo_ = os_cpu_usage_info_start();
 
 #ifdef _WIN32
+	PDH_HQUERY cpuTempQuery = nullptr;
+	PDH_HCOUNTER cpuTempCounter = nullptr;
+	if (PdhOpenQueryW(nullptr, 0, &cpuTempQuery) == ERROR_SUCCESS &&
+	    PdhAddEnglishCounterW(cpuTempQuery, L"\\Thermal Zone Information(*)\\Temperature", 0, &cpuTempCounter) == ERROR_SUCCESS) {
+		cpuTempQuery_ = cpuTempQuery;
+		cpuTempCounter_ = cpuTempCounter;
+		PdhCollectQueryData(cpuTempQuery);
+	} else if (cpuTempQuery) {
+		PdhCloseQuery(cpuTempQuery);
+	}
+
 	PDH_HQUERY query = nullptr;
 	PDH_HCOUNTER counter = nullptr;
 	if (PdhOpenQueryW(nullptr, 0, &query) == ERROR_SUCCESS &&
@@ -245,7 +256,6 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 			DXGI_ADAPTER_DESC1 desc = {};
 			if (SUCCEEDED(adapter->GetDesc1(&desc)) &&
 			    QString::fromWCharArray(desc.Description).contains(QStringLiteral("NVIDIA"), Qt::CaseInsensitive)) {
-				gpuDedicatedBytes_ = static_cast<quint64>(desc.DedicatedVideoMemory);
 				IDXGIAdapter3 *adapter3 = nullptr;
 				if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void **>(&adapter3))))
 					gpuDxgiAdapter_ = adapter3;
@@ -303,6 +313,36 @@ void TimesDock::shutdown()
 		PdhCloseQuery(static_cast<PDH_HQUERY>(gpuQuery_));
 		gpuQuery_ = nullptr;
 		gpuCounter_ = nullptr;
+	}
+	if (cpuTempQuery_) {
+		PdhCloseQuery(static_cast<PDH_HQUERY>(cpuTempQuery_));
+		cpuTempQuery_ = nullptr;
+		cpuTempCounter_ = nullptr;
+	}
+	if (cpuTempQuery_ && cpuTempCounter_) {
+		const auto query = static_cast<PDH_HQUERY>(cpuTempQuery_);
+		const auto counter = static_cast<PDH_HCOUNTER>(cpuTempCounter_);
+		if (PdhCollectQueryData(query) == ERROR_SUCCESS) {
+			DWORD bytes = 0, count = 0;
+			PDH_STATUS status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, nullptr);
+			if (status == PDH_MORE_DATA && bytes && count) {
+				std::vector<unsigned char> buffer(bytes);
+				auto *items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
+				status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, items);
+				if (status == ERROR_SUCCESS) {
+					double hottestC = -1.0;
+					for (DWORD i = 0; i < count; ++i) {
+						if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
+						    items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA) continue;
+						// Windows thermal-zone counters report tenths of Kelvin.
+						const double celsius = items[i].FmtValue.doubleValue / 10.0 - 273.15;
+						if (celsius > -40.0 && celsius < 150.0)
+							hottestC = std::max(hottestC, celsius);
+					}
+					cpuTemperatureC_ = hottestC;
+				}
+			}
+		}
 	}
 	if (gpuDxgiAdapter_) {
 		static_cast<IDXGIAdapter3 *>(gpuDxgiAdapter_)->Release();
@@ -397,15 +437,14 @@ void TimesDock::updatePanel()
 		.arg(s.framesDropped)
 		.arg(s.totalFrames > 0 ? (100.0 * s.framesDropped / s.totalFrames) : 0.0, 0, 'f', 2);
 	auto pct = [](double v) { return v >= 0.0 ? QString::number(v, 'f', 0) + QLatin1Char('%') : QStringLiteral("--"); };
-	const QString memoryText = gpuMemoryBudgetBytes_ > 0
-		? QStringLiteral("%1/%2MB").arg(gpuMemoryUsedBytes_ / (1024 * 1024)).arg(gpuMemoryBudgetBytes_ / (1024 * 1024))
-		: QStringLiteral("--");
-	const QString tempText = gpuTemperatureC_ >= 0.0 ? QStringLiteral("%1C").arg(gpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
+	const QString cpuTempText = cpuTemperatureC_ >= 0.0 ? QStringLiteral("%1°C").arg(cpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
+	const QString gpuTempText = gpuTemperatureC_ >= 0.0 ? QStringLiteral("%1°C").arg(gpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
 	const QString powerText = gpuPowerWatts_ >= 0.0 ? QStringLiteral("%1W").arg(gpuPowerWatts_, 0, 'f', 1) : QStringLiteral("N/A");
-	const QString stats = QStringLiteral("CPU %1%   3D %2   ENC %3   DEC %4\\nCOPY %5   VRAM %6\\nTEMP %7   POWER %8\\nFPS %9   BITRATE %10   DROP %11")
-		.arg(cpuPercent_, 0, 'f', 1).arg(pct(gpu3DPercent_)).arg(pct(gpuEncodePercent_))
-		.arg(pct(gpuDecodePercent_)).arg(pct(gpuCopyPercent_)).arg(memoryText)
-		.arg(tempText).arg(powerText).arg(fpsText).arg(bitrateText).arg(dropText);
+	const QString stats = QStringLiteral("CPU %1   TEMP %2\\nGPU %3   TEMP %4   POWER %5\\n3D %6   ENC %7   DEC %8   COPY %9\\nFPS %10   BITRATE %11   DROP %12")
+		.arg(pct(cpuPercent_)).arg(cpuTempText).arg(pct(gpuOverallPercent_))
+		.arg(gpuTempText).arg(powerText).arg(pct(gpu3DPercent_))
+		.arg(pct(gpuEncodePercent_)).arg(pct(gpuDecodePercent_)).arg(pct(gpuCopyPercent_))
+		.arg(fpsText).arg(bitrateText).arg(dropText);
 	panel_->setStatus(state, fmtDuration(recordedNow(s, nowMs)), fmtFileSize(fileSize), stats);
 }
 
@@ -550,6 +589,7 @@ void TimesDock::updateGpuUsage()
 				status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, items);
 				if (status == ERROR_SUCCESS) {
 					QHash<QString, double> engines[4];
+					QHash<QString, double> allEngines;
 					static const QRegularExpression pattern(
 						QStringLiteral("^(?:pid_\\d+_)?(.+)_engtype_(3D|VideoEncode|VideoDecode|Copy)$"),
 						QRegularExpression::CaseInsensitiveOption);
@@ -565,7 +605,10 @@ void TimesDock::updateGpuUsage()
 							type.compare(QStringLiteral("VideoEncode"), Qt::CaseInsensitive) == 0 ? 1 :
 							type.compare(QStringLiteral("VideoDecode"), Qt::CaseInsensitive) == 0 ? 2 :
 							type.compare(QStringLiteral("Copy"), Qt::CaseInsensitive) == 0 ? 3 : -1;
-						if (n >= 0) engines[n][match.captured(1)] += items[i].FmtValue.doubleValue;
+						if (n >= 0) {
+							engines[n][match.captured(1)] += items[i].FmtValue.doubleValue;
+							allEngines[match.captured(1)] += items[i].FmtValue.doubleValue;
+						}
 					}
 					auto busiest = [](const QHash<QString, double> &map) {
 						double value = -1.0;
@@ -576,16 +619,11 @@ void TimesDock::updateGpuUsage()
 					gpuEncodePercent_ = busiest(engines[1]);
 					gpuDecodePercent_ = busiest(engines[2]);
 					gpuCopyPercent_ = busiest(engines[3]);
+					// Task Manager-style overall GPU load: busiest physical engine,
+					// not a sum of independent engine percentages.
+					gpuOverallPercent_ = busiest(allEngines);
 				}
 			}
-		}
-	}
-	if (gpuDxgiAdapter_) {
-		DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
-		if (SUCCEEDED(static_cast<IDXGIAdapter3 *>(gpuDxgiAdapter_)->QueryVideoMemoryInfo(
-				0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
-			gpuMemoryUsedBytes_ = info.CurrentUsage;
-			gpuMemoryBudgetBytes_ = info.Budget;
 		}
 	}
 	if (nvmlDevice_ && nvmlGetTemperature_ && nvmlGetPowerUsage_) {
