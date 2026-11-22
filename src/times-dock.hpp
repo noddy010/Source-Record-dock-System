@@ -70,12 +70,12 @@ private:
 	bool sourceRecordFound_ = false;
 	void *cpuInfo_ = nullptr;
 	double cpuPercent_ = 0.0;
-	double cpuTemperatureC_ = -1.0;
 	double gpuOverallPercent_ = -1.0;
 	void *gpuQuery_ = nullptr;
 	void *gpuCounter_ = nullptr;
-	void *cpuTempQuery_ = nullptr;
-	void *cpuTempCounter_ = nullptr;
+	void *cpuSpeedQuery_ = nullptr;
+	void *cpuSpeedCounter_ = nullptr;
+	double cpuSpeedMHz_ = -1.0;
 	QString gpuAdapterLuid_;
 	qint64 lastGpuPollMs_ = 0;
 	double gpu3DPercent_ = -1.0;
