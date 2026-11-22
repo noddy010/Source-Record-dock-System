@@ -21,6 +21,7 @@
 #endif
 #include <windows.h>
 #include <pdh.h>
+#include <pdhmsg.h>
 #include <dxgi1_2.h>
 #endif
 
