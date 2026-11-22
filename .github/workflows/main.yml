@@ -2,7 +2,7 @@ name: Build Windows plugin
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/gpu-3d-monitor]
   workflow_dispatch:
 
 jobs:
