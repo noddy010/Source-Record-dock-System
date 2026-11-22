@@ -164,7 +164,7 @@ protected:
 		p.setFont(statsFont);
 		p.setPen(QColor("#b5b5b5"));
 		const QStringList statLines = statsText_.split(QLatin1Char('\n'));
-		const qreal statTop = outer.top() + 194;
+		const qreal statTop = outer.top() + 210;
 		const qreal statStep = 30.0;
 		for (int i = 0; i < statLines.size(); ++i) {
 			p.drawText(QRectF(outer.left() + 22, statTop + i * statStep,
