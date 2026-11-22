@@ -45,7 +45,7 @@ QString findNvidiaAdapterLuid()
 		    QString::fromWCharArray(desc.Description).contains(QStringLiteral("NVIDIA"), Qt::CaseInsensitive)) {
 			result = QStringLiteral("luid_0x%1_0x%2")
 					 .arg(static_cast<quint32>(desc.AdapterLuid.HighPart), 8, 16, QLatin1Char('0'))
-					 .arg(desc.AdapterLuid.LowPart, 8, 16, QLatin1Char('0'));
+					 .arg(static_cast<quint32>(desc.AdapterLuid.LowPart), 8, 16, QLatin1Char('0'));
 			adapter->Release();
 			break;
 		}
