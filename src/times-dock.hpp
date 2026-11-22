@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QHash>
+#include <QString>
 #include <QTimer>
 #include <QVector>
 #include <QWidget>
