@@ -18,10 +18,44 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <pdh.h>
+#include <dxgi1_2.h>
 #endif
 
 #include <algorithm>
 #include <vector>
+
+#ifdef _WIN32
+namespace {
+QString findNvidiaAdapterLuid()
+{
+	IDXGIFactory1 *factory = nullptr;
+	if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory))))
+		return QString();
+
+	QString result;
+	for (UINT index = 0;; ++index) {
+		IDXGIAdapter1 *adapter = nullptr;
+		if (factory->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND)
+			break;
+		if (!adapter)
+			continue;
+
+		DXGI_ADAPTER_DESC1 desc = {};
+		if (SUCCEEDED(adapter->GetDesc1(&desc)) &&
+		    QString::fromWCharArray(desc.Description).contains(QStringLiteral("NVIDIA"), Qt::CaseInsensitive)) {
+			result = QStringLiteral("luid_0x%1_0x%2")
+					 .arg(static_cast<quint32>(desc.AdapterLuid.HighPart), 8, 16, QLatin1Char('0'))
+					 .arg(desc.AdapterLuid.LowPart, 8, 16, QLatin1Char('0'));
+			adapter->Release();
+			break;
+		}
+		adapter->Release();
+	}
+	factory->Release();
+	return result;
+}
+} // namespace
+#endif
 
 class StatusPanel final : public QWidget {
 public:
@@ -191,6 +225,7 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 	    PdhAddEnglishCounterW(query, L"\\GPU Engine(*)\\Utilization Percentage", 0, &counter) == ERROR_SUCCESS) {
 		gpuQuery_ = query;
 		gpuCounter_ = counter;
+		gpuAdapterLuid_ = findNvidiaAdapterLuid();
 		// Prime the rate counter. A valid percentage is available on a later sample.
 		PdhCollectQueryData(query);
 	} else if (query) {
@@ -482,6 +517,9 @@ void TimesDock::updateGpuUsage()
 		    items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
 			continue;
 		const QString instance = QString::fromWCharArray(items[i].szName);
+		if (!gpuAdapterLuid_.isEmpty() &&
+		    !instance.contains(gpuAdapterLuid_, Qt::CaseInsensitive))
+			continue;
 		const auto match = enginePattern.match(instance);
 		if (!match.hasMatch())
 			continue;
