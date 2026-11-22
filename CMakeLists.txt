@@ -18,7 +18,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
 
 if(WIN32)
   # Windows Performance Counters provide low-overhead GPU Engine 3D utilization.
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE pdh)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE pdh dxgi)
 endif()
 
 if(ENABLE_FRONTEND_API)
