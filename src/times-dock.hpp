@@ -71,6 +71,7 @@ private:
 	double cpuPercent_ = 0.0;
 	void *gpuQuery_ = nullptr;
 	void *gpuCounter_ = nullptr;
+	QString gpuAdapterLuid_;
 	qint64 lastGpuPollMs_ = 0;
 	double gpu3DPercent_ = -1.0;
 };
