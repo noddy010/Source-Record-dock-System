@@ -70,7 +70,7 @@ public:
 	explicit StatusPanel(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("cleanRecordingPanel"));
-		setMinimumSize(360, 340);
+		setMinimumSize(360, 380);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	}
 
@@ -165,7 +165,7 @@ protected:
 		p.setPen(QColor("#b5b5b5"));
 		const QStringList statLines = statsText_.split(QLatin1Char('\n'));
 		const qreal statTop = outer.top() + 194;
-		const qreal statStep = 34.0;
+		const qreal statStep = 30.0;
 		for (int i = 0; i < statLines.size(); ++i) {
 			p.drawText(QRectF(outer.left() + 22, statTop + i * statStep,
 					  outer.width() - 44, 24),
@@ -210,14 +210,14 @@ private:
 	State state_ = State::Stopped;
 	QString timeText_ = QStringLiteral("00:00:00");
 	QString sizeText_ = QStringLiteral("FILE SIZE 0 B");
-	QString statsText_ = QStringLiteral("CPU --%   SPEED -- GHz\nGPU --%   TEMP --°C   POWER --W\nFPS --   BITRATE --   DROP --");
+	QString statsText_ = QStringLiteral("CPU --%   SPEED -- GHz\nGPU --%   TEMP --°C   POWER --W\nNET ↓ -- KB/s   ↑ -- KB/s\nFPS --   BITRATE --   DROP --");
 };
 
 TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 {
 	sourceRecordFound_ = RecordMonitor::sourceRecordInstalled();
 
-	setMinimumSize(360, 340);
+	setMinimumSize(360, 380);
 	setObjectName(QStringLiteral("sourceRecordTimesDock"));
 	setStyleSheet(QStringLiteral("QWidget#sourceRecordTimesDock { background: #111111; }"));
 
@@ -240,6 +240,20 @@ TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
 		PdhCollectQueryData(cpuSpeedQuery);
 	} else if (cpuSpeedQuery) {
 		PdhCloseQuery(cpuSpeedQuery);
+	}
+
+	PDH_HQUERY networkQuery = nullptr;
+	PDH_HCOUNTER downloadCounter = nullptr;
+	PDH_HCOUNTER uploadCounter = nullptr;
+	if (PdhOpenQueryW(nullptr, 0, &networkQuery) == ERROR_SUCCESS &&
+	    PdhAddEnglishCounterW(networkQuery, L"\\Network Interface(*)\\Bytes Received/sec", 0, &downloadCounter) == ERROR_SUCCESS &&
+	    PdhAddEnglishCounterW(networkQuery, L"\\Network Interface(*)\\Bytes Sent/sec", 0, &uploadCounter) == ERROR_SUCCESS) {
+		networkQuery_ = networkQuery;
+		networkDownloadCounter_ = downloadCounter;
+		networkUploadCounter_ = uploadCounter;
+		PdhCollectQueryData(networkQuery);
+	} else if (networkQuery) {
+		PdhCloseQuery(networkQuery);
 	}
 
 	PDH_HQUERY query = nullptr;
@@ -325,6 +339,12 @@ void TimesDock::shutdown()
 		PdhCloseQuery(static_cast<PDH_HQUERY>(cpuSpeedQuery_));
 		cpuSpeedQuery_ = nullptr;
 		cpuSpeedCounter_ = nullptr;
+	}
+	if (networkQuery_) {
+		PdhCloseQuery(static_cast<PDH_HQUERY>(networkQuery_));
+		networkQuery_ = nullptr;
+		networkDownloadCounter_ = nullptr;
+		networkUploadCounter_ = nullptr;
 	}
 	if (gpuDxgiAdapter_) {
 		static_cast<IDXGIAdapter3 *>(gpuDxgiAdapter_)->Release();
@@ -424,9 +444,16 @@ void TimesDock::updatePanel()
 		: QStringLiteral("N/A");
 	const QString gpuTempText = gpuTemperatureC_ >= 0.0 ? QStringLiteral("%1°C").arg(gpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
 	const QString powerText = gpuPowerWatts_ >= 0.0 ? QStringLiteral("%1W").arg(gpuPowerWatts_, 0, 'f', 1) : QStringLiteral("N/A");
-	const QString stats = QStringLiteral("CPU %1   SPEED %2 GHz\nGPU %3   TEMP %4   POWER %5\nFPS %6   BITRATE %7   DROP %8")
+	auto rateText = [](double bytesPerSecond) {
+		if (bytesPerSecond < 0.0) return QStringLiteral("--");
+		if (bytesPerSecond >= 1024.0 * 1024.0)
+			return QStringLiteral("%1 MB/s").arg(bytesPerSecond / (1024.0 * 1024.0), 0, 'f', 1);
+		return QStringLiteral("%1 KB/s").arg(bytesPerSecond / 1024.0, 0, 'f', 0);
+	};
+	const QString stats = QStringLiteral("CPU %1   SPEED %2 GHz\nGPU %3   TEMP %4   POWER %5\nNET ↓ %6   ↑ %7\nFPS %8   BITRATE %9   DROP %10")
 		.arg(QString::number(cpuPercent_, 'f', 1) + QLatin1Char('%')).arg(cpuSpeedText).arg(pct(gpuOverallPercent_))
-		.arg(gpuTempText).arg(powerText).arg(fpsText).arg(bitrateText).arg(dropText);
+		.arg(gpuTempText).arg(powerText).arg(rateText(networkDownloadBytesPerSec_)).arg(rateText(networkUploadBytesPerSec_))
+		.arg(fpsText).arg(bitrateText).arg(dropText);
 	panel_->setStatus(state, fmtDuration(recordedNow(s, nowMs)), fmtFileSize(fileSize), stats);
 }
 
@@ -592,6 +619,31 @@ void TimesDock::updateGpuUsage()
 					gpuOverallPercent_ = busiest(allEngines);
 				}
 			}
+		}
+	}
+	if (networkQuery_ && networkDownloadCounter_ && networkUploadCounter_) {
+		const auto query = static_cast<PDH_HQUERY>(networkQuery_);
+		if (PdhCollectQueryData(query) == ERROR_SUCCESS) {
+			auto sumCounter = [](PDH_HCOUNTER counter) {
+				DWORD bytes = 0, count = 0;
+				PDH_STATUS status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, nullptr);
+				if (status != PDH_MORE_DATA || bytes == 0 || count == 0) return -1.0;
+				std::vector<unsigned char> buffer(bytes);
+				auto *items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
+				status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, items);
+				if (status != ERROR_SUCCESS) return -1.0;
+				double total = 0.0;
+				bool found = false;
+				for (DWORD i = 0; i < count; ++i) {
+					if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
+					    items[i].FmtValue.CStatus != PDH_CSTATUS_NEW_DATA) continue;
+					total += std::max(0.0, items[i].FmtValue.doubleValue);
+					found = true;
+				}
+				return found ? total : -1.0;
+			};
+			networkDownloadBytesPerSec_ = sumCounter(static_cast<PDH_HCOUNTER>(networkDownloadCounter_));
+			networkUploadBytesPerSec_ = sumCounter(static_cast<PDH_HCOUNTER>(networkUploadCounter_));
 		}
 	}
 	if (cpuSpeedQuery_ && cpuSpeedCounter_) {
