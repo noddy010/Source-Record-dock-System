@@ -78,10 +78,6 @@ private:
 	double cpuSpeedMHz_ = -1.0;
 	QString gpuAdapterLuid_;
 	qint64 lastGpuPollMs_ = 0;
-	double gpu3DPercent_ = -1.0;
-	double gpuEncodePercent_ = -1.0;
-	double gpuDecodePercent_ = -1.0;
-	double gpuCopyPercent_ = -1.0;
 	double gpuTemperatureC_ = -1.0;
 	double gpuPowerWatts_ = -1.0;
 	void *gpuDxgiAdapter_ = nullptr;
