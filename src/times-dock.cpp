@@ -446,9 +446,11 @@ void TimesDock::updatePanel()
 	const QString powerText = gpuPowerWatts_ >= 0.0 ? QStringLiteral("%1W").arg(gpuPowerWatts_, 0, 'f', 1) : QStringLiteral("N/A");
 	auto rateText = [](double bytesPerSecond) {
 		if (bytesPerSecond < 0.0) return QStringLiteral("--");
-		if (bytesPerSecond >= 1024.0 * 1024.0)
-			return QStringLiteral("%1 MB/s").arg(bytesPerSecond / (1024.0 * 1024.0), 0, 'f', 1);
-		return QStringLiteral("%1 KB/s").arg(bytesPerSecond / 1024.0, 0, 'f', 0);
+		// Network rates are displayed in bits/s (not bytes/s), using decimal units.
+		const double bitsPerSecond = bytesPerSecond * 8.0;
+		if (bitsPerSecond >= 1000000.0)
+			return QStringLiteral("%1 Mb/s").arg(bitsPerSecond / 1000000.0, 0, 'f', 1);
+		return QStringLiteral("%1 Kb/s").arg(bitsPerSecond / 1000.0, 0, 'f', 0);
 	};
 	const QString stats = QStringLiteral("CPU %1   SPEED %2 GHz\nGPU %3   TEMP %4   POWER %5\nNET ↓ %6   ↑ %7\nFPS %8   BITRATE %9   DROP %10")
 		.arg(QString::number(cpuPercent_, 'f', 1) + QLatin1Char('%')).arg(cpuSpeedText).arg(pct(gpuOverallPercent_))
