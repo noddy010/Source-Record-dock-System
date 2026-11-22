@@ -70,7 +70,7 @@ public:
 	explicit StatusPanel(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("cleanRecordingPanel"));
-		setMinimumSize(360, 390);
+		setMinimumSize(360, 340);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	}
 
@@ -210,7 +210,7 @@ private:
 	State state_ = State::Stopped;
 	QString timeText_ = QStringLiteral("00:00:00");
 	QString sizeText_ = QStringLiteral("FILE SIZE 0 B");
-	QString statsText_ = QStringLiteral("CPU --%   SPEED -- MHz\nGPU --%   TEMP --°C   POWER --W\n3D --%   ENC --%   DEC --%   COPY --%\nFPS --   BITRATE --   DROP --");
+	QString statsText_ = QStringLiteral("CPU --%   SPEED -- GHz\nGPU --%   TEMP --°C   POWER --W\nFPS --   BITRATE --   DROP --");
 };
 
 TimesDock::TimesDock(QWidget *parent) : QWidget(parent)
@@ -420,15 +420,13 @@ void TimesDock::updatePanel()
 		.arg(s.totalFrames > 0 ? (100.0 * s.framesDropped / s.totalFrames) : 0.0, 0, 'f', 2);
 	auto pct = [](double v) { return v >= 0.0 ? QString::number(v, 'f', 0) + QLatin1Char('%') : QStringLiteral("--"); };
 	const QString cpuSpeedText = cpuSpeedMHz_ > 0.0
-		? QStringLiteral("%1 MHz").arg(cpuSpeedMHz_, 0, 'f', 0)
+		? QString::number(cpuSpeedMHz_ / 1000.0, 'f', 1)
 		: QStringLiteral("N/A");
 	const QString gpuTempText = gpuTemperatureC_ >= 0.0 ? QStringLiteral("%1°C").arg(gpuTemperatureC_, 0, 'f', 0) : QStringLiteral("N/A");
 	const QString powerText = gpuPowerWatts_ >= 0.0 ? QStringLiteral("%1W").arg(gpuPowerWatts_, 0, 'f', 1) : QStringLiteral("N/A");
-	const QString stats = QStringLiteral("CPU %1   SPEED %2\nGPU %3   TEMP %4   POWER %5\n3D %6   ENC %7   DEC %8   COPY %9\nFPS %10   BITRATE %11   DROP %12")
+	const QString stats = QStringLiteral("CPU %1   SPEED %2 GHz\nGPU %3   TEMP %4   POWER %5\nFPS %6   BITRATE %7   DROP %8")
 		.arg(QString::number(cpuPercent_, 'f', 1) + QLatin1Char('%')).arg(cpuSpeedText).arg(pct(gpuOverallPercent_))
-		.arg(gpuTempText).arg(powerText).arg(pct(gpu3DPercent_))
-		.arg(pct(gpuEncodePercent_)).arg(pct(gpuDecodePercent_)).arg(pct(gpuCopyPercent_))
-		.arg(fpsText).arg(bitrateText).arg(dropText);
+		.arg(gpuTempText).arg(powerText).arg(fpsText).arg(bitrateText).arg(dropText);
 	panel_->setStatus(state, fmtDuration(recordedNow(s, nowMs)), fmtFileSize(fileSize), stats);
 }
 
@@ -572,10 +570,9 @@ void TimesDock::updateGpuUsage()
 				auto *items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buffer.data());
 				status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, items);
 				if (status == ERROR_SUCCESS) {
-					QHash<QString, double> engines[4];
 					QHash<QString, double> allEngines;
 					static const QRegularExpression pattern(
-						QStringLiteral("^(?:pid_\\d+_)?(.+)_engtype_(3D|VideoEncode|VideoDecode|Copy)$"),
+						QStringLiteral("^(?:pid_\\d+_)?(.+)_engtype_(?:3D|VideoEncode|VideoDecode|Copy)$"),
 						QRegularExpression::CaseInsensitiveOption);
 					for (DWORD i = 0; i < count; ++i) {
 						if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA &&
@@ -584,27 +581,14 @@ void TimesDock::updateGpuUsage()
 						if (!gpuAdapterLuid_.isEmpty() && !instance.contains(gpuAdapterLuid_, Qt::CaseInsensitive)) continue;
 						const auto match = pattern.match(instance);
 						if (!match.hasMatch()) continue;
-						const QString type = match.captured(2);
-						int n = type.compare(QStringLiteral("3D"), Qt::CaseInsensitive) == 0 ? 0 :
-							type.compare(QStringLiteral("VideoEncode"), Qt::CaseInsensitive) == 0 ? 1 :
-							type.compare(QStringLiteral("VideoDecode"), Qt::CaseInsensitive) == 0 ? 2 :
-							type.compare(QStringLiteral("Copy"), Qt::CaseInsensitive) == 0 ? 3 : -1;
-						if (n >= 0) {
-							engines[n][match.captured(1)] += items[i].FmtValue.doubleValue;
-							allEngines[match.captured(1)] += items[i].FmtValue.doubleValue;
-						}
+						allEngines[match.captured(1)] += items[i].FmtValue.doubleValue;
 					}
 					auto busiest = [](const QHash<QString, double> &map) {
 						double value = -1.0;
 						for (auto it = map.cbegin(); it != map.cend(); ++it) value = std::max(value, it.value());
 						return value < 0.0 ? -1.0 : std::clamp(value, 0.0, 100.0);
 					};
-					gpu3DPercent_ = busiest(engines[0]);
-					gpuEncodePercent_ = busiest(engines[1]);
-					gpuDecodePercent_ = busiest(engines[2]);
-					gpuCopyPercent_ = busiest(engines[3]);
-					// Task Manager-style overall GPU load: busiest physical engine,
-					// not a sum of independent engine percentages.
+					// Overall GPU load: busiest physical engine, not a sum of engines.
 					gpuOverallPercent_ = busiest(allEngines);
 				}
 			}
