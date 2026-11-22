@@ -75,6 +75,11 @@ private:
 	void *gpuCounter_ = nullptr;
 	void *cpuSpeedQuery_ = nullptr;
 	void *cpuSpeedCounter_ = nullptr;
+	void *networkQuery_ = nullptr;
+	void *networkDownloadCounter_ = nullptr;
+	void *networkUploadCounter_ = nullptr;
+	double networkDownloadBytesPerSec_ = -1.0;
+	double networkUploadBytesPerSec_ = -1.0;
 	double cpuSpeedMHz_ = -1.0;
 	QString gpuAdapterLuid_;
 	qint64 lastGpuPollMs_ = 0;
